@@ -85,13 +85,13 @@ export function useDashboard(userId: string | undefined): UseDashboardResult {
         .eq('user_id', userId)
         .eq('is_active', true),
 
-      // Low stock items
+      // Low stock items — fetch all active, filter client-side (PostgREST
+      // cannot compare two columns; JS filter below handles the actual logic)
       supabase
         .from('items')
         .select('id, title, sku, quantity_in_stock, reorder_point')
         .eq('user_id', userId)
         .eq('is_active', true)
-        .filter('quantity_in_stock', 'lte', 'reorder_point' as unknown as string)
         .order('quantity_in_stock', { ascending: true }),
 
       // Recent transactions with item title

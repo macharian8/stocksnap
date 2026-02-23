@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useAuthStore } from '../../../store/auth';
 import { useItems } from '../../../lib/useItems';
 import { ItemCard } from '../../../components/inventory/ItemCard';
@@ -29,6 +29,14 @@ export default function InventoryListScreen() {
         item.sku.toLowerCase().includes(query)
     );
   }, [items, search]);
+
+  // Re-fetch whenever this screen comes into focus (e.g. navigating back
+  // from add.tsx). Tab screens don't unmount, so useEffect alone misses this.
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh])
+  );
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);

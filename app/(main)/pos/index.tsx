@@ -6,7 +6,11 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
+
+// CameraView crashes the iOS simulator at the native module level — never render it there.
+const IS_SIMULATOR = Platform.OS === 'ios' && __DEV__;
 import {
   CameraView,
   useCameraPermissions,
@@ -53,11 +57,13 @@ export default function PosScreen() {
   const [scannedItem, setScannedItem] = useState<Item | null>(null);
   const [showSheet, setShowSheet] = useState(false);
   const [isLookingUp, setIsLookingUp] = useState(false);
+  const [cameraError, setCameraError] = useState(false);
 
   // Manual SKU entry
   const [manualSku, setManualSku] = useState('');
 
-  const cameraAvailable = permission?.granted === true;
+  // IS_SIMULATOR is the primary guard — permission check is secondary.
+  const cameraAvailable = !IS_SIMULATOR && permission?.granted === true && !cameraError;
 
   const lookupBySku = useCallback(
     async (sku: string) => {
@@ -116,9 +122,10 @@ export default function PosScreen() {
   const handleManualLookup = useCallback(() => {
     const sku = manualSku.trim();
     if (!sku) return;
-    setLastScannedSku(sku);
+    // Do NOT call setLastScannedSku here — that's camera debounce state.
+    // Manual lookup goes straight to Supabase, independent of camera.
     lookupBySku(sku);
-  }, [manualSku, setLastScannedSku, lookupBySku]);
+  }, [manualSku, lookupBySku]);
 
   const handleConfirmSale = useCallback(
     async (data: {
@@ -173,10 +180,17 @@ export default function PosScreen() {
     setScannedItem(null);
   }, []);
 
-  // Request camera permission on mount
+  // Request camera permission on mount — wrapped in try/catch because
+  // simulators and some environments throw when camera is unavailable
   useEffect(() => {
     if (permission && !permission.granted && permission.canAskAgain) {
-      requestPermission();
+      (async () => {
+        try {
+          await requestPermission();
+        } catch {
+          setCameraError(true);
+        }
+      })();
     }
   }, [permission, requestPermission]);
 
@@ -191,7 +205,37 @@ export default function PosScreen() {
       </View>
 
       {/* Camera or Manual Entry */}
-      {cameraAvailable ? (
+      {IS_SIMULATOR ? (
+        // Simulator: CameraView crashes the native module — never render it here.
+        // Show placeholder text and a fully functional manual SKU entry instead.
+        <View className="flex-1 items-center justify-center px-6">
+          <Text className="mb-10 text-center text-sm text-white opacity-50">
+            Camera unavailable in simulator{'\n'}Use manual SKU entry below
+          </Text>
+          <View className="w-full flex-row gap-2">
+            <TextInput
+              className="min-h-[52px] flex-1 rounded-xl border border-white/20 bg-white/10 px-4 text-base text-white"
+              placeholder="Enter SKU (e.g. SS-20260221-0001)"
+              placeholderTextColor="rgba(255,255,255,0.5)"
+              value={manualSku}
+              onChangeText={setManualSku}
+              autoCapitalize="characters"
+            />
+            <Pressable
+              onPress={handleManualLookup}
+              disabled={isLookingUp || !manualSku.trim()}
+              className="min-h-[52px] items-center justify-center rounded-xl bg-[#16A34A] px-5 disabled:opacity-50"
+            >
+              {isLookingUp ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text className="text-sm font-semibold text-white">Find</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : cameraAvailable ? (
+        // Physical device with camera permission — show live scanner
         <View className="flex-1">
           <CameraView
             style={{ flex: 1 }}
@@ -240,7 +284,7 @@ export default function PosScreen() {
           </CameraView>
         </View>
       ) : (
-        // Fallback: manual SKU entry (camera unavailable / Expo Go)
+        // Physical device without camera permission — manual entry fallback
         <View className="flex-1 items-center justify-center bg-[#F0FDF4] px-6">
           <Text className="text-5xl">🔍</Text>
           <Text className="mt-4 text-lg font-semibold text-[#111827]">

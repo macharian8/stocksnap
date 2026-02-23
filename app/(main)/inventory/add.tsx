@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -47,7 +47,6 @@ interface FormData {
   buyPrice: string;
   sellPrice: string;
   floorPrice: string;
-  ceilingPrice: string;
   quantity: string;
   reorderPoint: string;
 }
@@ -136,6 +135,131 @@ function PriceInput({
   );
 }
 
+function CategoryAutocomplete({
+  value,
+  onChange,
+  userId,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  userId: string | null;
+}) {
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchSuggestions = useCallback(
+    async (prefix: string) => {
+      if (!userId || !prefix.trim()) {
+        setSuggestions([]);
+        return;
+      }
+      const { data } = await supabase
+        .from('items')
+        .select('category')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .ilike('category', `${prefix}%`)
+        .not('category', 'is', null)
+        .limit(20);
+
+      if (data) {
+        const unique = [
+          ...new Set(
+            data
+              .map((r) => r.category as string | null)
+              .filter((c): c is string => c !== null)
+          ),
+        ].slice(0, 5);
+        setSuggestions(unique);
+      }
+    },
+    [userId]
+  );
+
+  const handleChangeText = useCallback(
+    (text: string) => {
+      onChange(text);
+      fetchSuggestions(text);
+      setShowDropdown(true);
+    },
+    [onChange, fetchSuggestions]
+  );
+
+  const handleFocus = useCallback(() => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+    fetchSuggestions(value);
+    setShowDropdown(true);
+  }, [value, fetchSuggestions]);
+
+  const handleBlur = useCallback(() => {
+    blurTimer.current = setTimeout(() => setShowDropdown(false), 150);
+  }, []);
+
+  const handleSelect = useCallback(
+    (suggestion: string) => {
+      if (blurTimer.current) clearTimeout(blurTimer.current);
+      onChange(suggestion);
+      setSuggestions([]);
+      setShowDropdown(false);
+    },
+    [onChange]
+  );
+
+  return (
+    <View className="mb-4">
+      <Text className="mb-2 text-sm font-medium text-[#111827]">Category</Text>
+      <View style={{ position: 'relative', zIndex: 10 }}>
+        <TextInput
+          className="min-h-[48px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-base text-[#111827]"
+          placeholder="e.g. Footwear"
+          placeholderTextColor="#9CA3AF"
+          value={value}
+          onChangeText={handleChangeText}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          autoCorrect={false}
+        />
+        {showDropdown && suggestions.length > 0 ? (
+          <View
+            style={{
+              position: 'absolute',
+              top: 52,
+              left: 0,
+              right: 0,
+              backgroundColor: '#FFFFFF',
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: '#E5E7EB',
+              zIndex: 999,
+              elevation: 4,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.1,
+              shadowRadius: 4,
+            }}
+          >
+            {suggestions.map((s, i) => (
+              <Pressable
+                key={s}
+                onPress={() => handleSelect(s)}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 13,
+                  borderBottomWidth: i < suggestions.length - 1 ? 1 : 0,
+                  borderBottomColor: '#F3F4F6',
+                }}
+              >
+                <Text style={{ fontSize: 14, color: '#111827' }}>{s}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export default function AddItemScreen() {
   const user = useAuthStore((s) => s.user);
   const showToast = useToastStore((s) => s.show);
@@ -154,7 +278,6 @@ export default function AddItemScreen() {
     buyPrice: '',
     sellPrice: '',
     floorPrice: '',
-    ceilingPrice: '',
     quantity: '',
     reorderPoint: '3',
   });
@@ -242,19 +365,21 @@ export default function AddItemScreen() {
 
     const sell = parseFloat(form.sellPrice || '0');
     const floor = parseFloat(form.floorPrice || '0');
-    const ceiling = form.ceilingPrice ? parseFloat(form.ceilingPrice) : null;
 
     if (floor > sell) errors.floorPrice = 'Floor must be ≤ sell price';
-    if (ceiling !== null && ceiling < sell)
-      errors.ceilingPrice = 'Ceiling must be ≥ sell price';
 
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   }, [form]);
 
-  // Duplicate detection
+  // Duplicate detection — title only; category is never compared here.
   const checkDuplicates = useCallback(async (): Promise<boolean> => {
     if (!user) return false;
+
+    const newTitle = form.title.trim().toLowerCase();
+    // Require at least 3 characters to avoid single-word / category-level
+    // strings (e.g. "Bag", "Shoes") triggering false positives.
+    if (newTitle.length < 3) return false;
 
     const { data: existing } = await supabase
       .from('items')
@@ -264,9 +389,11 @@ export default function AddItemScreen() {
 
     if (!existing || existing.length === 0) return false;
 
-    const newTitle = form.title.trim().toLowerCase();
     const match = (existing as DuplicateMatch[]).find((item) => {
-      const existingTitle = item.title.toLowerCase();
+      const existingTitle = item.title.trim().toLowerCase();
+      // Only match when both sides are long enough to be specific titles,
+      // and at least one is a substring of the other.
+      if (existingTitle.length < 3) return false;
       return (
         existingTitle.includes(newTitle) || newTitle.includes(existingTitle)
       );
@@ -355,9 +482,7 @@ export default function AddItemScreen() {
       buy_price: parseFloat(form.buyPrice),
       sell_price: parseFloat(form.sellPrice),
       sell_price_floor: parseFloat(form.floorPrice || form.sellPrice),
-      sell_price_ceiling: form.ceilingPrice
-        ? parseFloat(form.ceilingPrice)
-        : null,
+      sell_price_ceiling: null,
       quantity_in_stock: parseInt(form.quantity, 10),
       quantity_sold: 0,
       reorder_point: parseInt(form.reorderPoint, 10) || 3,
@@ -541,18 +666,11 @@ export default function AddItemScreen() {
           </View>
 
           {/* Category */}
-          <View className="mb-4">
-            <Text className="mb-2 text-sm font-medium text-[#111827]">
-              Category
-            </Text>
-            <TextInput
-              className="min-h-[48px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-base text-[#111827]"
-              placeholder="e.g. Footwear"
-              placeholderTextColor="#9CA3AF"
-              value={form.category}
-              onChangeText={(t) => updateField('category', t)}
-            />
-          </View>
+          <CategoryAutocomplete
+            value={form.category}
+            onChange={(v) => updateField('category', v)}
+            userId={user?.id ?? null}
+          />
 
           {/* Condition */}
           <PickerRow
@@ -588,18 +706,11 @@ export default function AddItemScreen() {
             error={formErrors.sellPrice}
           />
           <PriceInput
-            label="Floor Price"
+            label="Lowest Acceptable Price"
             value={form.floorPrice}
             onChangeText={(t) => updateField('floorPrice', t)}
             placeholder="Same as sell price"
             error={formErrors.floorPrice}
-          />
-          <PriceInput
-            label="Ceiling Price"
-            value={form.ceilingPrice}
-            onChangeText={(t) => updateField('ceilingPrice', t)}
-            placeholder="Optional"
-            error={formErrors.ceilingPrice}
           />
 
           {/* Stock */}

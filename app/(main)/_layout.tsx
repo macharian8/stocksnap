@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { View, Text, Pressable, Modal } from 'react-native';
-import { Tabs, usePathname } from 'expo-router';
+import { Tabs, usePathname, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../store/auth';
 import { PinPad } from '../../components/ui/PinPad';
@@ -43,6 +43,7 @@ export default function MainLayout() {
     } else {
       // Switching to POS — no PIN needed
       setMode('pos');
+      router.push('/(main)/pos');
     }
   }, [targetMode, setMode]);
 
@@ -52,6 +53,7 @@ export default function MainLayout() {
       if (success) {
         setShowPinModal(false);
         setMode('inventory');
+        router.push('/(main)/inventory');
       }
       return success;
     },
@@ -88,6 +90,7 @@ export default function MainLayout() {
   return (
     <>
       <Tabs
+        initialRouteName="pos"
         screenOptions={{
           headerStyle: { backgroundColor: bgColor },
           headerShadowVisible: false,

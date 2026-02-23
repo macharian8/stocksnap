@@ -13,6 +13,7 @@ import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
 import { hashPin } from '../../lib/crypto';
+import { saveSession, saveUserId } from '../../lib/storage';
 import { useAuthStore } from '../../store/auth';
 import type { Profile } from '../../types';
 
@@ -24,6 +25,7 @@ export default function SetupScreen() {
   const [error, setError] = useState<string | null>(null);
   const phone = useAuthStore((s) => s.phone);
   const setUser = useAuthStore((s) => s.setUser);
+  const setSession = useAuthStore((s) => s.setSession);
 
   const handleSubmit = useCallback(async () => {
     setError(null);
@@ -44,6 +46,35 @@ export default function SetupScreen() {
     }
 
     setIsLoading(true);
+
+    if (__DEV__) {
+      // Dev bypass: no real Supabase session — build a mock profile locally
+      const devId = '00000000-0000-0000-0000-000000000001';
+      const pinHash = await hashPin(pin);
+      const now = new Date().toISOString();
+      const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+      const devProfile: Profile = {
+        id: devId,
+        phone: phone ?? '+254000000000',
+        pin_hash: pinHash,
+        subscription_status: 'trial',
+        trial_ends_at: trialEnd,
+        subscription_ends_at: null,
+        printer_serial: null,
+        business_name: businessName.trim(),
+        created_at: now,
+        updated_at: now,
+      };
+
+      saveSession('dev-access-token', 'dev-refresh-token');
+      saveUserId(devId);
+      setSession({ access_token: 'dev-access-token', refresh_token: 'dev-refresh-token' });
+      setUser(devProfile);
+      setIsLoading(false);
+      router.replace('/(main)/inventory');
+      return;
+    }
 
     const {
       data: { user: authUser },
@@ -98,7 +129,7 @@ export default function SetupScreen() {
         className="flex-1"
       >
         <ScrollView
-          contentContainerClassName="flex-grow justify-center px-8 py-12"
+          contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingHorizontal: 32, paddingVertical: 48 }}
           keyboardShouldPersistTaps="handled"
         >
           {/* Header */}
@@ -133,7 +164,7 @@ export default function SetupScreen() {
             Create a 6-digit PIN
           </Text>
           <TextInput
-            className="mb-6 min-h-[52px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-center text-2xl tracking-[12px] text-[#111827]"
+            className="mb-6 min-h-[52px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-center text-2xl text-[#111827]"
             placeholder="------"
             placeholderTextColor="#9CA3AF"
             keyboardType="number-pad"
@@ -152,7 +183,7 @@ export default function SetupScreen() {
             Confirm PIN
           </Text>
           <TextInput
-            className="mb-2 min-h-[52px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-center text-2xl tracking-[12px] text-[#111827]"
+            className="mb-2 min-h-[52px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-center text-2xl text-[#111827]"
             placeholder="------"
             placeholderTextColor="#9CA3AF"
             keyboardType="number-pad"

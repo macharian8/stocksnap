@@ -11,6 +11,7 @@ import {
 import { Image } from 'expo-image';
 import type { Item, PaymentMethod } from '../../types';
 import { normalizeKenyanPhone, isValidKenyanPhone } from '../../lib/phone';
+import { useToastStore } from '../../store/toast';
 
 interface SaleSheetProps {
   item: Item;
@@ -47,6 +48,7 @@ export function SaleSheet({
   const [mpesaPhone, setMpesaPhone] = useState('');
   const [mpesaCode, setMpesaCode] = useState('');
   const [notes, setNotes] = useState('');
+  const showToast = useToastStore((s) => s.show);
 
   const priceNum = useMemo(() => parseFloat(price) || 0, [price]);
   const total = useMemo(() => priceNum * quantity, [priceNum, quantity]);
@@ -122,21 +124,35 @@ export function SaleSheet({
   ]);
 
   const submitSale = useCallback(() => {
+    // STK push not yet implemented — fall back to cash and inform the user.
+    if (paymentMethod === 'mpesa_stk') {
+      showToast(
+        'M-Pesa STK coming soon — recording as cash sale',
+        'warning'
+      );
+      onConfirm({
+        price: priceNum,
+        quantity,
+        paymentMethod: 'cash',
+        mpesaPhone: null,
+        mpesaCode: null,
+        notes: notes.trim() || null,
+      });
+      return;
+    }
+
     onConfirm({
       price: priceNum,
       quantity,
       paymentMethod,
-      mpesaPhone:
-        paymentMethod === 'mpesa_stk'
-          ? normalizeKenyanPhone(mpesaPhone)
-          : null,
+      mpesaPhone: null,
       mpesaCode:
         paymentMethod === 'mpesa_till'
           ? mpesaCode.trim().toUpperCase()
           : null,
       notes: paymentMethod === 'other' && notes.trim() ? notes.trim() : null,
     });
-  }, [priceNum, quantity, paymentMethod, mpesaPhone, mpesaCode, notes, onConfirm]);
+  }, [priceNum, quantity, paymentMethod, mpesaCode, notes, onConfirm, showToast]);
 
   return (
     <View className="rounded-t-3xl bg-white px-6 pb-10 pt-4">

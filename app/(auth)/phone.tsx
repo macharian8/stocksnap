@@ -38,6 +38,12 @@ export default function PhoneScreen() {
     setIsLoading(false);
 
     if (otpError) {
+      if (__DEV__) {
+        // Phone provider disabled in dev — bypass OTP send and go to OTP screen
+        setStorePhone(normalized);
+        router.push('/(auth)/otp');
+        return;
+      }
       setError(otpError.message);
       return;
     }
@@ -108,6 +114,18 @@ export default function PhoneScreen() {
               </Text>
             )}
           </Pressable>
+
+          {/* Debug (dev only) */}
+          {__DEV__ ? (
+            <Pressable
+              onPress={() => router.push('/debug')}
+              className="mt-2 min-h-[44px] items-center justify-center"
+            >
+              <Text className="text-sm font-medium text-[#6B7280]">
+                Debug
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

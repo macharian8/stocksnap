@@ -83,6 +83,13 @@ export default function OtpScreen() {
     setIsLoading(true);
     setError(null);
 
+    if (__DEV__) {
+      // Dev bypass: skip Supabase OTP verification
+      setIsLoading(false);
+      router.replace('/(auth)/setup');
+      return;
+    }
+
     const { data, error: verifyError } = await supabase.auth.verifyOtp({
       phone,
       token,
@@ -225,6 +232,18 @@ export default function OtpScreen() {
                 : 'Resend code'}
             </Text>
           </Pressable>
+
+          {/* Dev skip (dev only) */}
+          {__DEV__ ? (
+            <Pressable
+              onPress={() => router.replace('/(auth)/setup')}
+              className="mt-2 min-h-[44px] items-center justify-center"
+            >
+              <Text className="text-sm font-medium text-[#6B7280]">
+                Dev: Skip Verification
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
