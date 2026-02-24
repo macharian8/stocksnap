@@ -42,7 +42,7 @@ export function SaleSheet({
   onConfirm,
   onClose,
 }: SaleSheetProps) {
-  const [price, setPrice] = useState(String(item.sell_price));
+  const [price, setPrice] = useState(String(item.sell_price ?? 0));
   const [quantity, setQuantity] = useState(1);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [mpesaPhone, setMpesaPhone] = useState('');
@@ -54,11 +54,13 @@ export function SaleSheet({
   const total = useMemo(() => priceNum * quantity, [priceNum, quantity]);
 
   const priceError = useMemo(() => {
-    if (priceNum < item.sell_price_floor) {
-      return `Min price: KES ${item.sell_price_floor.toLocaleString()}`;
+    const floor = item.sell_price_floor ?? 0;
+    if (priceNum < floor) {
+      return `Min price: KES ${floor.toLocaleString()}`;
     }
-    if (item.sell_price_ceiling !== null && priceNum > item.sell_price_ceiling) {
-      return `Max price: KES ${item.sell_price_ceiling.toLocaleString()}`;
+    const ceiling = item.sell_price_ceiling ?? null;
+    if (ceiling !== null && priceNum > ceiling) {
+      return `Max price: KES ${ceiling.toLocaleString()}`;
     }
     return null;
   }, [priceNum, item.sell_price_floor, item.sell_price_ceiling]);
@@ -209,7 +211,7 @@ export function SaleSheet({
             <TextInput
               className="min-h-[48px] flex-1 text-lg font-bold text-[#111827]"
               keyboardType="decimal-pad"
-              value={price}
+              value={price ?? ''}
               onChangeText={(t) => setPrice(t.replace(/[^0-9.]/g, ''))}
             />
           </View>
@@ -291,7 +293,7 @@ export function SaleSheet({
                 keyboardType="phone-pad"
                 placeholder="712 345 678"
                 placeholderTextColor="#9CA3AF"
-                value={mpesaPhone}
+                value={mpesaPhone ?? ''}
                 onChangeText={setMpesaPhone}
                 maxLength={13}
               />
@@ -308,7 +310,7 @@ export function SaleSheet({
               className="min-h-[48px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-base uppercase text-[#111827]"
               placeholder="e.g. SJ45K7H2L9"
               placeholderTextColor="#9CA3AF"
-              value={mpesaCode}
+              value={mpesaCode ?? ''}
               onChangeText={setMpesaCode}
               maxLength={10}
               autoCapitalize="characters"
@@ -325,7 +327,7 @@ export function SaleSheet({
               className="min-h-[48px] rounded-xl border border-[#E5E7EB] bg-white px-4 text-base text-[#111827]"
               placeholder="Payment details"
               placeholderTextColor="#9CA3AF"
-              value={notes}
+              value={notes ?? ''}
               onChangeText={setNotes}
             />
           </View>

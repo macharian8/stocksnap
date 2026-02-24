@@ -7,13 +7,33 @@ export interface Profile {
   subscription_ends_at: string | null;
   printer_serial: string | null;
   business_name: string;
+  role: 'owner' | 'attendant';
+  shop_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Shop {
+  id: string;
+  owner_id: string;
+  name: string;
+  location: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShopMember {
+  id: string;
+  shop_id: string;
+  user_id: string;
+  role: 'owner' | 'attendant';
+  created_at: string;
 }
 
 export interface Item {
   id: string;
   user_id: string;
+  shop_id: string | null;
   title: string;
   description: string | null;
   sku: string;
@@ -81,6 +101,7 @@ export interface DashboardStats {
 export interface Transaction {
   id: string;
   user_id: string;
+  shop_id: string | null;
   item_id: string;
   attendant_id: string | null;
   transaction_type: 'sale' | 'restock' | 'adjustment' | 'return';

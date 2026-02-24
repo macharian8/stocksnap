@@ -43,7 +43,7 @@ export default function DebugScreen() {
     }
 
     setIsCreating(true);
-    const sku = generateSku(user.id);
+    const sku = generateSku(user.id, user.business_name);
     const now = new Date().toISOString();
 
     const { error } = await supabase.from('items').insert({

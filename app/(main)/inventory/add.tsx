@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -445,8 +445,11 @@ export default function AddItemScreen() {
     setIsSaving(true);
     setSaveError(null);
 
-    const sku = generateSku(user.id);
-    const qrCodeData = `stocksnap://item/${sku}`;
+    const sku = generateSku(user.id, user.business_name);
+    // Encode only the bare SKU so the QR module count stays minimal
+    // on thermal labels. The POS scanner handles both this format and
+    // the legacy stocksnap://item/{sku} format.
+    const qrCodeData = sku;
     let imageUrl: string | null = null;
 
     // Upload image if present

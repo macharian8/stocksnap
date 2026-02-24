@@ -9,18 +9,23 @@ import {
   Platform,
 } from 'react-native';
 
-// CameraView crashes the iOS simulator at the native module level — never render it there.
-const IS_SIMULATOR = Platform.OS === 'ios' && __DEV__;
+import Constants from 'expo-constants';
 import {
   CameraView,
   useCameraPermissions,
   BarcodeScanningResult,
 } from 'expo-camera';
+
+// CameraView crashes the iOS Simulator at the native module level — never render it there.
+// On physical devices __DEV__ can be true, so we check the device name instead.
+const IS_SIMULATOR =
+  Platform.OS === 'ios' && (Constants.deviceName?.includes('Simulator') ?? false);
 import { supabase } from '../../../lib/supabase';
 import { useTransaction } from '../../../lib/useTransaction';
 import { useAuthStore } from '../../../store/auth';
 import { useToastStore } from '../../../store/toast';
 import { SaleSheet } from '../../../components/pos/SaleSheet';
+import { ErrorBoundary } from '../../../components/ErrorBoundary';
 import type { Item, PaymentMethod } from '../../../types';
 
 const SCAN_DEBOUNCE_MS = 2000;
@@ -46,16 +51,18 @@ function formatTime(): string {
 
 export default function PosScreen() {
   const user = useAuthStore((s) => s.user);
-  const lastScannedSku = useAuthStore((s) => s.lastScannedSku);
-  const lastScanTime = useAuthStore((s) => s.lastScanTime);
-  const setLastScannedSku = useAuthStore((s) => s.setLastScannedSku);
   const showToast = useToastStore((s) => s.show);
   const { isLoading: isSaleLoading, error: saleError, createSale } = useTransaction();
   const time = useClock();
 
+  const isProcessing = useRef(false);
+  // Sync showSheet into a ref so the stable scan callback always reads the
+  // current value without being recreated on every modal open/close.
+  const showSheetRef = useRef(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [scannedItem, setScannedItem] = useState<Item | null>(null);
   const [showSheet, setShowSheet] = useState(false);
+  showSheetRef.current = showSheet; // always current — never stale in callbacks
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [cameraError, setCameraError] = useState(false);
 
@@ -67,56 +74,104 @@ export default function PosScreen() {
 
   const lookupBySku = useCallback(
     async (sku: string) => {
-      if (!user) return;
+      if (!user) {
+        console.log('[POS] lookupBySku: no user in store — aborting');
+        return;
+      }
 
+      console.log('[POS] lookupBySku: start', { sku, userId: user.id });
       setIsLookingUp(true);
 
-      const { data, error } = await supabase
-        .from('items')
-        .select('*')
-        .eq('sku', sku)
-        .eq('user_id', user.id)
-        .eq('is_active', true)
-        .maybeSingle();
+      try {
+        // Query both sku AND qr_code_data columns — items created before the
+        // SKU format change may store the new-format value in qr_code_data
+        // while the sku column still holds the old format, or vice-versa.
+        const { data, error } = await supabase
+          .from('items')
+          .select('*')
+          .or(`sku.eq.${sku},qr_code_data.eq.${sku}`)
+          .eq('user_id', user.id)
+          .eq('is_active', true)
+          .maybeSingle();
 
-      setIsLookingUp(false);
+        console.log('[POS] lookupBySku: query complete', {
+          found: !!data,
+          title: data?.title ?? null,
+          skuInDb: data?.sku ?? null,
+          qrCodeDataInDb: data?.qr_code_data ?? null,
+          errorCode: error?.code ?? null,
+          errorMessage: error?.message ?? null,
+        });
 
-      if (error) {
+        if (error) {
+          console.error('[POS] lookupBySku: Supabase error', error);
+          showToast('Error looking up item', 'error');
+          return;
+        }
+
+        if (!data) {
+          console.log('[POS] lookupBySku: no row matched sku or qr_code_data =', sku);
+          showToast('Item not in system', 'error');
+          return;
+        }
+
+        console.log('[POS] lookupBySku: setting scannedItem →', data.title);
+        setScannedItem(data as Item);
+        setShowSheet(true);
+        console.log('[POS] lookupBySku: showSheet set true');
+      } catch (e) {
+        console.error('[POS] lookupBySku: unexpected throw', e);
         showToast('Error looking up item', 'error');
-        return;
+      } finally {
+        setIsLookingUp(false);
       }
-
-      if (!data) {
-        showToast('Item not in system', 'error');
-        return;
-      }
-
-      setScannedItem(data as Item);
-      setShowSheet(true);
     },
     [user, showToast]
   );
 
+  // Stable callback — never recreated when showSheet / isLookingUp change.
+  // Uses refs and store.getState() to always read current values, avoiding
+  // stale closures that caused the CameraView to miss the modal-open guard.
   const handleBarcodeScan = useCallback(
-    (result: BarcodeScanningResult) => {
-      if (showSheet || isLookingUp) return;
+    async (result: BarcodeScanningResult) => {
+      // isProcessing blocks any concurrent scan while a lookup is in flight.
+      if (isProcessing.current) return;
+      // showSheetRef is kept current on every render — no stale value risk.
+      if (showSheetRef.current) return;
 
-      const rawData = result.data;
-      // Extract SKU from stocksnap://item/{sku} format
-      const match = rawData.match(/^stocksnap:\/\/item\/(.+)$/);
-      if (!match) return;
+      isProcessing.current = true;
+      try {
+        const rawData = result.data;
+        console.log('[POS] scanned:', rawData);
 
-      const sku = match[1];
+        // Legacy items encoded as: stocksnap://item/{sku}
+        // New items encode the bare SKU:  SS-YYMM-3CHAR-5DIGITS  e.g. SS-2602-TEC-00001
+        const urlMatch = rawData.match(/^stocksnap:\/\/item\/(.+)$/);
+        const skuMatch = rawData.match(/^SS-\d{4}-[A-Z0-9]{3}-\d{5}$/);
+        if (!urlMatch && !skuMatch) return;
 
-      // Debounce: ignore same SKU within 2 seconds
-      if (sku === lastScannedSku && Date.now() - lastScanTime < SCAN_DEBOUNCE_MS) {
-        return;
+        const sku = urlMatch ? urlMatch[1] : rawData.trim();
+
+        // Read debounce state from the store directly — avoids stale closure.
+        const {
+          lastScannedSku,
+          lastScanTime,
+          setLastScannedSku,
+        } = useAuthStore.getState();
+
+        if (sku === lastScannedSku && Date.now() - lastScanTime < SCAN_DEBOUNCE_MS) {
+          return;
+        }
+
+        setLastScannedSku(sku);
+        await lookupBySku(sku);
+      } catch (e) {
+        console.error('[POS] scan error:', e);
+      } finally {
+        isProcessing.current = false;
       }
-
-      setLastScannedSku(sku);
-      lookupBySku(sku);
     },
-    [showSheet, isLookingUp, lastScannedSku, lastScanTime, setLastScannedSku, lookupBySku]
+    [lookupBySku]
   );
 
   const handleManualLookup = useCallback(() => {
@@ -180,22 +235,45 @@ export default function PosScreen() {
     setScannedItem(null);
   }, []);
 
-  // Request camera permission on mount — wrapped in try/catch because
-  // simulators and some environments throw when camera is unavailable
+  // Request camera permission after the component fully mounts.
+  // Requesting immediately (or re-requesting on every permission change) causes
+  // expo-camera to read its permissions plist before the native module has
+  // finished initialising, producing a SIGABRT (NSMutableDictionary
+  // initWithContentsOfFile) crash on the first launch after a cold start or
+  // crash-recovery. The 500 ms delay lets the native layer settle first.
+  // Empty deps is intentional — one request per mount, not per permission tick.
   useEffect(() => {
-    if (permission && !permission.granted && permission.canAskAgain) {
-      (async () => {
-        try {
-          await requestPermission();
-        } catch {
-          setCameraError(true);
-        }
-      })();
-    }
-  }, [permission, requestPermission]);
+    const timer = setTimeout(() => {
+      if (!IS_SIMULATOR) requestPermission().catch(() => setCameraError(true));
+    }, 500);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <View className="flex-1 bg-[#111827]">
+      {/* ── CameraView at screen root ──────────────────────────────────────────
+          CameraView must NOT live inside the Modal subtree, and must be
+          unmounted before a Modal presents. When iOS presents a modal view
+          controller, UIKit signals the active AVCaptureSession to suspend.
+          expo-camera's native handler performs an NSMutableDictionary
+          initWithContentsOfFile read during that callback. If the session is
+          still running when the Modal animates in, that read races with the
+          presentation and triggers SIGABRT.
+
+          Fix: render CameraView once at the screen root, absolutely positioned
+          behind all other views. Guard with !showSheet so the AVCaptureSession
+          is fully stopped before the Modal becomes visible. When the sheet
+          closes, the component remounts and the camera restarts.             */}
+      {!IS_SIMULATOR && cameraAvailable && !showSheet ? (
+        <CameraView
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          facing="back"
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          onBarcodeScanned={handleBarcodeScan}
+        />
+      ) : null}
+
       {/* Green header */}
       <View className="bg-[#16A34A] px-4 pb-3 pt-3">
         <View className="flex-row items-center justify-between">
@@ -204,10 +282,11 @@ export default function PosScreen() {
         </View>
       </View>
 
-      {/* Camera or Manual Entry */}
+      {/* Scan overlay / Manual Entry
+          When cameraAvailable, the content View is transparent — the root-level
+          CameraView (absolutely positioned behind everything) shows through.   */}
       {IS_SIMULATOR ? (
-        // Simulator: CameraView crashes the native module — never render it here.
-        // Show placeholder text and a fully functional manual SKU entry instead.
+        // Simulator: CameraView is never rendered — manual SKU entry only.
         <View className="flex-1 items-center justify-center px-6">
           <Text className="mb-10 text-center text-sm text-white opacity-50">
             Camera unavailable in simulator{'\n'}Use manual SKU entry below
@@ -215,7 +294,7 @@ export default function PosScreen() {
           <View className="w-full flex-row gap-2">
             <TextInput
               className="min-h-[52px] flex-1 rounded-xl border border-white/20 bg-white/10 px-4 text-base text-white"
-              placeholder="Enter SKU (e.g. SS-20260221-0001)"
+              placeholder="Enter SKU (e.g. SS-2602-TEC-00001)"
               placeholderTextColor="rgba(255,255,255,0.5)"
               value={manualSku}
               onChangeText={setManualSku}
@@ -235,56 +314,47 @@ export default function PosScreen() {
           </View>
         </View>
       ) : cameraAvailable ? (
-        // Physical device with camera permission — show live scanner
+        // Physical device — transparent overlay on top of the root CameraView.
         <View className="flex-1">
-          <CameraView
-            style={{ flex: 1 }}
-            facing="back"
-            barcodeScannerSettings={{
-              barcodeTypes: ['qr'],
-            }}
-            onBarcodeScanned={handleBarcodeScan}
-          >
-            {/* Scan overlay */}
-            <View className="flex-1 items-center justify-center">
-              <View className="h-64 w-64 rounded-3xl border-2 border-white/40" />
-              <Text className="mt-4 text-sm text-white/70">
-                Point at a StockSnap QR code
-              </Text>
-              {isLookingUp ? (
-                <View className="mt-4 flex-row items-center gap-2">
-                  <ActivityIndicator color="#16A34A" />
-                  <Text className="text-sm text-white/80">Looking up item...</Text>
-                </View>
-              ) : null}
-            </View>
-
-            {/* Manual entry toggle at bottom */}
-            <View className="px-4 pb-6">
-              <View className="flex-row gap-2">
-                <TextInput
-                  className="min-h-[48px] flex-1 rounded-xl border border-white/20 bg-black/40 px-4 text-base text-white"
-                  placeholder="Or enter SKU manually"
-                  placeholderTextColor="rgba(255,255,255,0.5)"
-                  value={manualSku}
-                  onChangeText={setManualSku}
-                  autoCapitalize="characters"
-                />
-                <Pressable
-                  onPress={handleManualLookup}
-                  disabled={isLookingUp || !manualSku.trim()}
-                  className="min-h-[48px] items-center justify-center rounded-xl bg-[#16A34A] px-5 disabled:opacity-50"
-                >
-                  <Text className="text-sm font-semibold text-white">
-                    Find
-                  </Text>
-                </Pressable>
+          {/* Scan frame */}
+          <View className="flex-1 items-center justify-center">
+            <View className="h-64 w-64 rounded-3xl border-2 border-white/40" />
+            <Text className="mt-4 text-sm text-white/70">
+              Point at a StockSnap QR code
+            </Text>
+            {isLookingUp ? (
+              <View className="mt-4 flex-row items-center gap-2">
+                <ActivityIndicator color="#16A34A" />
+                <Text className="text-sm text-white/80">Looking up item...</Text>
               </View>
+            ) : null}
+          </View>
+
+          {/* Manual entry at bottom */}
+          <View className="px-4 pb-6">
+            <View className="flex-row gap-2">
+              <TextInput
+                className="min-h-[48px] flex-1 rounded-xl border border-white/20 bg-black/40 px-4 text-base text-white"
+                placeholder="Or enter SKU manually"
+                placeholderTextColor="rgba(255,255,255,0.5)"
+                value={manualSku}
+                onChangeText={setManualSku}
+                autoCapitalize="characters"
+              />
+              <Pressable
+                onPress={handleManualLookup}
+                disabled={isLookingUp || !manualSku.trim()}
+                className="min-h-[48px] items-center justify-center rounded-xl bg-[#16A34A] px-5 disabled:opacity-50"
+              >
+                <Text className="text-sm font-semibold text-white">
+                  Find
+                </Text>
+              </Pressable>
             </View>
-          </CameraView>
+          </View>
         </View>
       ) : (
-        // Physical device without camera permission — manual entry fallback
+        // Physical device without camera permission — manual entry fallback.
         <View className="flex-1 items-center justify-center bg-[#F0FDF4] px-6">
           <Text className="text-5xl">🔍</Text>
           <Text className="mt-4 text-lg font-semibold text-[#111827]">
@@ -297,7 +367,7 @@ export default function PosScreen() {
           <View className="w-full flex-row gap-2">
             <TextInput
               className="min-h-[52px] flex-1 rounded-xl border border-[#E5E7EB] bg-white px-4 text-base text-[#111827]"
-              placeholder="Enter SKU (e.g. SS-20260221-0001)"
+              placeholder="Enter SKU (e.g. SS-2602-TEC-00001)"
               placeholderTextColor="#9CA3AF"
               value={manualSku}
               onChangeText={setManualSku}
@@ -328,15 +398,17 @@ export default function PosScreen() {
         onRequestClose={handleCloseSheet}
       >
         <View className="flex-1 justify-end bg-black/40">
-          {scannedItem ? (
-            <SaleSheet
-              item={scannedItem}
-              isLoading={isSaleLoading}
-              error={saleError}
-              onConfirm={handleConfirmSale}
-              onClose={handleCloseSheet}
-            />
-          ) : null}
+          <ErrorBoundary>
+            {scannedItem ? (
+              <SaleSheet
+                item={scannedItem}
+                isLoading={isSaleLoading}
+                error={saleError}
+                onConfirm={handleConfirmSale}
+                onClose={handleCloseSheet}
+              />
+            ) : null}
+          </ErrorBoundary>
         </View>
       </Modal>
     </View>

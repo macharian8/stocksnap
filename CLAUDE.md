@@ -3,6 +3,24 @@
 **Read this file before writing any code.**
 This project uses a two-model workflow: **Claude Sonnet** for documents/planning, **Claude Opus** for all code.
 
+## Supabase Project
+
+- **Project ref:** `xjjjvusxencivbyiczdd`
+- **CLI:** `supabase` v2.75.0 installed via Homebrew (`supabase login` + `supabase link` already configured)
+
+### Schema Change Workflow
+
+**`supabase db execute --sql` does NOT exist** in this CLI version — never use it.
+
+**For schema changes:** Claude writes the SQL. User runs it manually in the **Supabase dashboard SQL editor**. This is intentional — it prevents accidental production database modifications.
+
+**For schema inspection (read-only, safe to run):**
+```bash
+supabase db dump --schema public
+```
+
+**NEVER run `supabase db push` without explicit user confirmation.** It overwrites the remote database and cannot be undone.
+
 ---
 
 ## Model Assignment
@@ -88,6 +106,8 @@ typescript       ~5.9.2
 | `npx expo install` fails with ERESOLVE | React 19 peer dep mismatches | Always use `npm install <pkg> --legacy-peer-deps` |
 | `xcode-select` points to wrong path | After Xcode install/update | Run `sudo xcode-select -s /Applications/Xcode.app` |
 | iOS Simulator missing | Fresh Xcode install | Install runtime via Xcode > Settings > Platforms > iOS |
+| Code signing invalidated after native rebuild | Any rebuild that adds new entitlements (camera, mic, etc.) | Trust new cert: iPhone Settings → General → VPN & Device Management → Trust. Then rebuild from Xcode or `npx expo run:ios --device`. |
+| Free Apple Developer cert expires after 7 days | Free account (no paid membership) | Open `ios/stocksnap.xcworkspace` in Xcode → Signing & Capabilities → rebuild. Paid accounts get 1-year certs. |
 
 ---
 
@@ -322,6 +342,135 @@ docs: update CLAUDE.md with printer specs
 | `lib/useItems.ts` | Item list fetch hook |
 | `store/auth.ts` | Auth state (Zustand) |
 | `store/toast.ts` | Toast notifications (Zustand) |
+
+---
+
+## PHASE 2 FEATURES — BACKLOG
+
+Items listed here are **designed but not implemented**. Do not write code for these until explicitly tasked. Reference this section when picking up Phase 2 work.
+
+---
+
+### Vision Correction Layer
+
+**Status:** Design complete, not implemented.
+
+When Google Vision mispredicts and the user manually corrects the title or category in `add.tsx`, store the mapping in Supabase so future predictions for the same item type use the corrected values instead of Vision's raw output.
+
+**Schema:**
+
+```sql
+create table vision_corrections (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references profiles(id) on delete cascade,
+  vision_labels text[] not null,      -- raw labels returned by Vision API
+  corrected_title    text not null,
+  corrected_category text,
+  created_at   timestamptz not null default now()
+);
+
+create index idx_vision_corrections_user
+  on vision_corrections (user_id);
+
+-- RLS: users can only read/write their own corrections
+alter table vision_corrections enable row level security;
+create policy "owner only" on vision_corrections
+  using (user_id = auth.uid());
+```
+
+**Flow:**
+
+1. Vision returns `labelAnnotations` → before showing pre-fill, query `vision_corrections` for `user_id = current` where `vision_labels && $incoming_labels` (array overlap, PostgreSQL `&&` operator)
+2. If any row matches with **2 or more overlapping labels**, use `corrected_title` / `corrected_category` instead of Vision's raw prediction
+3. If no match, use Vision's raw prediction as today
+4. When user edits the pre-filled title/category before saving, detect the change and `upsert` into `vision_corrections` (match on `user_id + vision_labels`)
+5. Over time, each store builds a personalized prediction layer trained on their own corrections
+
+**Implementation notes for Opus:**
+
+- Detection of "user corrected" = `form.title !== result.title || form.category !== result.category` at the point `handleSave` is called (compare against the last Vision result, stored in a ref)
+- The overlap query uses Supabase's `.contains()` or raw `.filter()` with `cs` operator — test carefully, PostgREST array overlap is `@>`/`<@` (contains/contained-by), not `&&`. May need a Postgres function or RPC for the `&&` overlap query
+- Keep the correction table per-user (RLS) — each store's corrections are their own IP and should never leak to other stores
+
+**Business value:** Store-specific prediction accuracy improves with use. Switching cost increases as the correction layer grows. Each store's correction dataset is proprietary to them.
+
+---
+
+### Multi-User & Multi-Shop Architecture
+
+**Status:** Schema foundation added (shop_id on items/transactions). Not implemented in app.
+
+Roles:
+- **owner**: full access, analytics, insights, manages attendants, can have multiple shops
+- **attendant**: POS + inventory view + basic sales only, no analytics, no settings
+
+Schema (shop_id already added to items/transactions via migration):
+- `shops`: id, owner_id, name, location
+- `shop_members`: shop_id, user_id, role
+- `profiles`: + role (owner/attendant), shop_id
+
+Owner dashboard shows:
+- Aggregated revenue across all shops
+- Per-shop breakdown
+- Fast moving items per shop
+- Suggested reorder quantities (based on sales velocity)
+- Attendant activity log
+
+Attendant view:
+- POS only by default
+- Inventory view (read + add, no delete/edit price)
+- Basic daily sales summary
+
+Multi-shop flow:
+- On setup, first shop is created automatically
+- Owner can add shops from settings
+- Switching shops changes context for all queries
+- items and transactions are always scoped to shop_id
+
+Implementation notes:
+- All Supabase queries must include shop_id filter when multi-shop enabled
+- RLS policies should be updated to use shop_members for access control
+- Dev user should be assigned to a dev shop automatically
+
+TypeScript interfaces already added to `types/index.ts`: `Shop`, `ShopMember`. `Profile`, `Item`, and `Transaction` already have `shop_id` / `role` fields.
+
+SQL to run in Supabase dashboard (already provided to user — do not re-run):
+```sql
+CREATE TABLE IF NOT EXISTS shops (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES auth.users(id) NOT NULL,
+  name text NOT NULL,
+  location text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS shop_members (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id uuid REFERENCES shops(id) NOT NULL,
+  user_id uuid REFERENCES auth.users(id) NOT NULL,
+  role text NOT NULL CHECK (role IN ('owner', 'attendant')),
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(shop_id, user_id)
+);
+
+ALTER TABLE items ADD COLUMN IF NOT EXISTS shop_id uuid REFERENCES shops(id);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS shop_id uuid REFERENCES shops(id);
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS role text DEFAULT 'owner' CHECK (role IN ('owner', 'attendant'));
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS shop_id uuid REFERENCES shops(id);
+```
+
+---
+
+### Other Backlog Items
+
+| Feature | Notes |
+|---------|-------|
+| **M-Pesa STK Push** | IntaSend integration. Trigger push from POS sale sheet when payment method = `mpesa_stk`. Poll or webhook for confirmation. |
+| **Africa's Talking SMS Receipts** | Send SMS to customer phone after sale confirmation. Optional, toggled in settings. AT sandbox available for testing. |
+| **Bluetooth Thermal Printer** | BLE pairing wizard in settings. Print label with QR code + item name + price. Research: `react-native-ble-plx` or Expo-compatible BLE library that works on SDK 52. |
+| **Google Vision Correction Layer** | See full spec above. |
+| **Category Autocomplete** | Already partially implemented (`CategoryAutocomplete` component in `add.tsx`). Needs: debouncing, keyboard-dismiss on select, and handling the case where `userId` is null gracefully. |
 
 ---
 

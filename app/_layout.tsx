@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator } from 'react-native';
 import { Slot, router } from 'expo-router';
 import { supabase } from '../lib/supabase';
-import { getStoredSession, loadFromStorage } from '../lib/storage';
+import { getStoredSession, getStoredUserId, loadFromStorage } from '../lib/storage';
 import { useAuthStore } from '../store/auth';
 import { useToastStore } from '../store/toast';
 import { Toast } from '../components/ui/Toast';
@@ -42,6 +42,24 @@ export default function RootLayout() {
       if (!mounted) return;
 
       if (error || !data.session) {
+        if (__DEV__) {
+          const userId = getStoredUserId();
+          if (userId) {
+            const { data: devProfile } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', userId)
+              .maybeSingle();
+            if (!mounted) return;
+            if (devProfile) {
+              setUser(devProfile as Profile);
+              setIsReady(true);
+              router.replace('/(auth)/pin-login');
+              return;
+            }
+          }
+        }
+        if (!mounted) return;
         setLoading(false);
         setIsReady(true);
         router.replace('/(auth)/phone');

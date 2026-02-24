@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -6,9 +6,13 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, router, Stack } from 'expo-router';
 import { Image } from 'expo-image';
+import QRCode from 'react-native-qrcode-svg';
+import { captureRef } from 'react-native-view-shot';
+import * as Sharing from 'expo-sharing';
 import { useItem } from '../../../lib/useItem';
 
 function DetailRow({
@@ -32,6 +36,7 @@ export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { item, isLoading, error, softDelete } = useItem(id);
   const [isDeleting, setIsDeleting] = useState(false);
+  const qrRef = useRef<View>(null);
 
   const stockColor = useMemo(() => {
     if (!item) return '#6B7280';
@@ -83,6 +88,25 @@ export default function ItemDetailScreen() {
       ]
     );
   }, [softDelete]);
+
+  const handleShareQr = useCallback(async () => {
+    try {
+      // Give the SVG renderer time to paint before capture; without this
+      // delay the PNG is blank because the view-shot fires before the QR
+      // SVG has committed its first frame to the native layer.
+      await new Promise<void>((r) => setTimeout(r, 100));
+      const uri = await captureRef(qrRef, { format: 'png', quality: 1 });
+      await Sharing.shareAsync(uri, {
+        mimeType: 'image/png',
+        dialogTitle: 'Share QR Code',
+      });
+    } catch (err) {
+      Alert.alert(
+        'Share failed',
+        err instanceof Error ? err.message : 'Unknown error'
+      );
+    }
+  }, []);
 
   if (isLoading) {
     return (
@@ -212,13 +236,47 @@ export default function ItemDetailScreen() {
         </View>
 
         {/* QR Code */}
-        <View className="mx-4 mt-4">
+        <View className="mx-4 mt-4 rounded-xl bg-white p-6">
+          <Text className="mb-4 text-xs font-semibold uppercase tracking-wider text-[#6B7280]">
+            QR Code
+          </Text>
+
+          {/* Captured region: QR + SKU label.
+              Explicit width/backgroundColor/padding are required for
+              react-native-view-shot: NativeWind flex sizing can produce a
+              zero-width view before the SVG paints, yielding a blank PNG. */}
+          <View
+            ref={qrRef}
+            style={{
+              alignItems: 'center',
+              backgroundColor: '#ffffff',
+              padding: 16,
+              width: 182,
+            }}
+          >
+            <QRCode
+              value={item.qr_code_data}
+              size={150}
+              ecl="M"
+              color="#000000"
+              backgroundColor="#ffffff"
+            />
+            <Text
+              className="mt-2 text-sm text-[#111827]"
+              style={{
+                fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+              }}
+            >
+              {item.sku}
+            </Text>
+          </View>
+
           <Pressable
-            onPress={() => router.push(`/(main)/inventory/qr/${id}`)}
-            className="min-h-[52px] items-center justify-center rounded-xl bg-[#2563EB]"
+            onPress={handleShareQr}
+            className="mt-4 min-h-[48px] items-center justify-center rounded-xl bg-[#2563EB]"
           >
             <Text className="text-base font-semibold text-white">
-              View QR Code
+              Share QR
             </Text>
           </Pressable>
         </View>

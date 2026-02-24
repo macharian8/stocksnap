@@ -57,6 +57,14 @@ export async function analyzeImage(
   base64: string
 ): Promise<AnalysisResult | null> {
   const apiKey = process.env.EXPO_PUBLIC_VISION_API_KEY;
+
+  if (__DEV__) {
+    console.log(
+      '[Vision] API key:',
+      apiKey ? `${apiKey.slice(0, 10)}... (${apiKey.length} chars)` : 'NOT SET — set EXPO_PUBLIC_VISION_API_KEY in .env.local'
+    );
+  }
+
   if (!apiKey) return null;
 
   const body = {
@@ -80,13 +88,29 @@ export async function analyzeImage(
     }
   );
 
+  if (__DEV__) {
+    console.log('[Vision] Response status:', response.status, response.statusText);
+  }
+
   if (!response.ok) {
+    if (__DEV__) {
+      const errBody = await response.text();
+      console.log('[Vision] Error body:', errBody);
+    }
     throw new Error(`Vision API error: ${response.status}`);
   }
 
   const data: VisionResponse = await response.json();
+
+  if (__DEV__) {
+    console.log('[Vision] Full response:', JSON.stringify(data, null, 2));
+  }
+
   const annotation = data.responses?.[0];
-  if (!annotation) return null;
+  if (!annotation) {
+    if (__DEV__) console.log('[Vision] No annotation in response — returning null');
+    return null;
+  }
 
   const topLabel = annotation.labelAnnotations?.[0]?.description ?? '';
   const category = topLabel;
@@ -103,6 +127,10 @@ export async function analyzeImage(
   }
 
   const title = colorStr ? `${colorStr} ${topLabel}` : topLabel;
+
+  if (__DEV__) {
+    console.log('[Vision] Result → title:', title, '| category:', category);
+  }
 
   return { title, category };
 }

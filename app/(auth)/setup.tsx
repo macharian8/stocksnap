@@ -63,6 +63,8 @@ export default function SetupScreen() {
         subscription_ends_at: null,
         printer_serial: null,
         business_name: businessName.trim(),
+        role: 'owner',
+        shop_id: null,
         created_at: now,
         updated_at: now,
       };
